@@ -1,0 +1,231 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+// ============================================================
+// MODELS
+// ============================================================
+
+model User {
+  id            String   @id @default(uuid())
+  name          String
+  email         String   @unique
+  phone         String?
+  passwordHash  String?  // null para contas Google-only
+  googleId      String?  @unique // Google OAuth subject ID
+  role          String   @default("CITIZEN") // Role enum: CITIZEN, ATTENDANT, SECTOR_MANAGER, SUPER_ADMIN
+  isActive      Boolean  @default(true)
+  emailVerified Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relations
+  submissions       CitizenSubmission[]
+  managedDepartment Department?            @relation("DepartmentManager")
+  notifications     Notification[]
+  auditLogs         AuditLog[]
+  refreshTokens     RefreshToken[]
+  assignedTickets   MasterTicket[]         @relation("AssignedTo")
+
+  @@index([email])
+  @@index([googleId])
+  @@index([role])
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  revokedAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model Department {
+  id           String   @id @default(uuid())
+  name         String
+  description  String?
+  email        String?
+  phone        String?
+  managerId    String?  @unique
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  manager      User?         @relation("DepartmentManager", fields: [managerId], references: [id])
+  categories   Category[]
+  masterTickets MasterTicket[]
+
+  @@map("departments")
+}
+
+model Category {
+  id           String   @id @default(uuid())
+  name         String
+  description  String?
+  icon         String?  // emoji ou nome de ícone
+  keywords     String   // palavras-chave para IA heurística (JSON ou comma-separated)
+  departmentId String
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  department   Department          @relation(fields: [departmentId], references: [id])
+  submissions  CitizenSubmission[]
+  masterTickets MasterTicket[]
+
+  @@index([departmentId])
+  @@map("categories")
+}
+
+model MasterTicket {
+  id             String         @id @default(uuid())
+  internalCode   String         @unique // ex: MT-2024-0001
+  title          String
+  description    String         // resumo gerado pela IA
+  status         String         @default("TRIAGED") // SubmissionStatus enum
+  priority       String         @default("MEDIUM") // TicketPriority enum
+  latitude       Float?
+  longitude      Float?
+  address        String?
+  neighborhood   String?
+  aiScore        Float?          // score de confiança da IA
+  aiReasoning    String?         // justificativa da IA
+  departmentId   String
+  categoryId     String
+  assignedToId   String?
+  resolvedAt     DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  // Relations
+  department    Department          @relation(fields: [departmentId], references: [id])
+  category      Category            @relation(fields: [categoryId], references: [id])
+  assignedTo    User?               @relation("AssignedTo", fields: [assignedToId], references: [id])
+  submissions   CitizenSubmission[]
+
+  @@index([status])
+  @@index([departmentId])
+  @@index([neighborhood])
+  @@index([createdAt])
+  @@map("master_tickets")
+}
+
+model CitizenSubmission {
+  id              String           @id @default(uuid())
+  protocol        String           @unique // ex: OUV-2024-000123
+  title           String
+  description     String
+  status          String           @default("RECEIVED") // SubmissionStatus enum
+  latitude        Float?
+  longitude       Float?
+  address         String?
+  neighborhood    String?
+  attachments     String?          // URLs dos arquivos (comma-separated ou JSON)
+  aiProcessed     Boolean         @default(false)
+  isDuplicate     Boolean         @default(false)
+  isAnonymous     Boolean         @default(false)
+  userId          String
+  categoryId      String?
+  masterTicketId  String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  // Relations
+  user          User              @relation(fields: [userId], references: [id])
+  category      Category?         @relation(fields: [categoryId], references: [id])
+  masterTicket  MasterTicket?     @relation(fields: [masterTicketId], references: [id])
+  statusHistory StatusHistory[]
+  notifications Notification[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([protocol])
+  @@index([neighborhood])
+  @@index([masterTicketId])
+  @@map("citizen_submissions")
+}
+
+model StatusHistory {
+  id           String           @id @default(uuid())
+  submissionId String
+  status       String // SubmissionStatus enum
+  comment      String?
+  changedById  String?
+  createdAt    DateTime         @default(now())
+
+  submission CitizenSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId])
+  @@map("status_history")
+}
+
+model KnowledgeBase {
+  id         String   @id @default(uuid())
+  question   String
+  answer     String
+  tags       String   // comma-separated tags
+  category   String?
+  views      Int      @default(0)
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([tags])
+  @@map("knowledge_base")
+}
+
+model Notification {
+  id           String   @id @default(uuid())
+  userId       String
+  submissionId String?
+  title        String
+  message      String
+  isRead       Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  submission CitizenSubmission? @relation(fields: [submissionId], references: [id])
+
+  @@index([userId])
+  @@index([isRead])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id             String      @id @default(uuid())
+  userId         String?
+  action         String // AuditAction enum
+  entityType     String?
+  entityId       String?
+  targetResource String?
+  oldValue       String?  // JSON stringificado
+  newValue       String?  // JSON stringificado
+  ipAddress      String?
+  userAgent      String?
+  createdAt      DateTime    @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}

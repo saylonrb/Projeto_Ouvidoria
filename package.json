@@ -1,0 +1,18 @@
+{
+  "name": "projeto_ouvidoria",
+  "version": "1.0.0",
+  "description": "> Sistema web completo para Ouvidoria Pública com IA integrada para triagem, deduplicação e roteamento automático de demandas cidadãs.",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@playwright/test": "^1.62.1"
+  }
+}

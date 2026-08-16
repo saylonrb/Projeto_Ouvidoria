@@ -1,0 +1,377 @@
+openapi: 3.0.3
+info:
+  title: Ouvidoria Inteligente Municipal - API
+  description: |
+    API RESTful da Plataforma de Ouvidoria Pública com IA integrada para triagem e deduplicação de demandas.
+    
+    ## Autenticação
+    Use `POST /api/auth/login` para obter um `accessToken`. Inclua-o no header `Authorization: Bearer <token>`.
+    
+    ## IA de Deduplicação
+    Ao criar uma nova demanda, a IA analisa automaticamente:
+    - Categoria e setor responsável
+    - Localização e demandas similares abertas nas últimas 72h
+    - Se encontrar duplicata: vincula ao chamado mestre existente
+  version: 1.0.0
+  contact:
+    name: Suporte Técnico
+    email: ti@municipio.gov.br
+
+servers:
+  - url: http://localhost:3001/api
+    description: Desenvolvimento local
+
+tags:
+  - name: Auth
+    description: Autenticação e gerenciamento de sessão
+  - name: Submissions
+    description: Demandas dos cidadãos
+  - name: Knowledge Base
+    description: Base de conhecimento / FAQ
+  - name: Admin
+    description: Painel administrativo (requer role ATTENDANT+)
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        email: { type: string, format: email }
+        role: { type: string, enum: [CITIZEN, ATTENDANT, SECTOR_MANAGER, SUPER_ADMIN] }
+        createdAt: { type: string, format: date-time }
+
+    Submission:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        protocol: { type: string, example: OUV-2024-000001 }
+        title: { type: string }
+        description: { type: string }
+        status:
+          type: string
+          enum: [RECEIVED, AI_PROCESSING, TRIAGED, FORWARDED, IN_PROGRESS, TEAM_DISPATCHED, COMPLETED, REJECTED, CANCELLED]
+        latitude: { type: number }
+        longitude: { type: number }
+        address: { type: string }
+        neighborhood: { type: string }
+        isDuplicate: { type: boolean }
+        createdAt: { type: string, format: date-time }
+
+    MasterTicket:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        internalCode: { type: string, example: MT-2024-0001 }
+        title: { type: string }
+        status: { type: string }
+        priority: { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL] }
+        aiScore: { type: number, minimum: 0, maximum: 1 }
+        submissions:
+          type: array
+          items: { $ref: '#/components/schemas/Submission' }
+
+    Error:
+      type: object
+      properties:
+        success: { type: boolean, example: false }
+        message: { type: string }
+
+    PaginatedResponse:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data: { type: array, items: {} }
+        meta:
+          type: object
+          properties:
+            page: { type: integer }
+            limit: { type: integer }
+            total: { type: integer }
+            totalPages: { type: integer }
+
+paths:
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Registrar novo cidadão
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password]
+              properties:
+                name: { type: string, minLength: 3 }
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8, description: "Mínimo 8 chars, 1 maiúscula, 1 número" }
+                cpf: { type: string }
+                phone: { type: string }
+      responses:
+        '201':
+          description: Cadastro realizado com sucesso
+        '409':
+          description: E-mail ou CPF já cadastrado
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Fazer login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string }
+                password: { type: string }
+      responses:
+        '200':
+          description: Login bem-sucedido, retorna accessToken
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Renovar access token via refresh token (cookie HttpOnly)
+      responses:
+        '200':
+          description: Novo accessToken gerado
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Encerrar sessão
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: Logout realizado
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Obter perfil do usuário autenticado
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: Dados do usuário
+
+  /submissions:
+    post:
+      tags: [Submissions]
+      summary: Criar nova demanda (cidadão autenticado)
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, description]
+              properties:
+                title: { type: string, minLength: 5, maxLength: 200 }
+                description: { type: string, minLength: 10, maxLength: 2000 }
+                latitude: { type: number }
+                longitude: { type: number }
+                address: { type: string }
+                neighborhood: { type: string }
+      responses:
+        '201':
+          description: Demanda criada. IA processa em background.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  protocol: { type: string, example: OUV-2024-000042 }
+                  status: { type: string, example: RECEIVED }
+
+  /submissions/me:
+    get:
+      tags: [Submissions]
+      summary: Histórico de demandas do cidadão autenticado
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 10 }
+        - name: status
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Lista paginada de demandas
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaginatedResponse' }
+
+  /submissions/track/{protocol}:
+    get:
+      tags: [Submissions]
+      summary: Rastrear demanda por protocolo (público)
+      parameters:
+        - name: protocol
+          in: path
+          required: true
+          schema: { type: string, example: OUV-2024-000001 }
+      responses:
+        '200':
+          description: Dados de rastreio com timeline
+        '404':
+          description: Protocolo não encontrado
+
+  /submissions/public:
+    get:
+      tags: [Submissions]
+      summary: Listar demandas públicas ativas (mapa)
+      parameters:
+        - name: neighborhood
+          in: query
+          schema: { type: string }
+        - name: categoryId
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50 }
+      responses:
+        '200':
+          description: Lista de demandas para o mapa público
+
+  /submissions/notifications:
+    get:
+      tags: [Submissions]
+      summary: Notificações do cidadão autenticado
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: Lista de notificações
+
+  /knowledge-base:
+    get:
+      tags: [Knowledge Base]
+      summary: Buscar artigos do FAQ (público)
+      parameters:
+        - name: search
+          in: query
+          schema: { type: string }
+        - name: category
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Lista de artigos
+
+  /admin/dashboard/metrics:
+    get:
+      tags: [Admin]
+      summary: Métricas do dashboard (tempo real)
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: KPIs, gráficos e dados de mapa de calor
+
+  /admin/submissions:
+    get:
+      tags: [Admin]
+      summary: Listar todas as demandas com filtros avançados
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: status
+          in: query
+          schema: { type: string }
+        - name: neighborhood
+          in: query
+          schema: { type: string }
+        - name: search
+          in: query
+          schema: { type: string }
+        - name: startDate
+          in: query
+          schema: { type: string, format: date }
+        - name: endDate
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Lista paginada de demandas
+
+  /admin/submissions/{id}/status:
+    patch:
+      tags: [Admin]
+      summary: Atualizar status de uma demanda
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status, comment]
+              properties:
+                status: { type: string, enum: [FORWARDED, IN_PROGRESS, TEAM_DISPATCHED, COMPLETED, REJECTED] }
+                comment: { type: string, minLength: 5 }
+      responses:
+        '200':
+          description: Status atualizado e cidadão notificado
+
+  /admin/master-tickets:
+    get:
+      tags: [Admin]
+      summary: Listar tickets agrupados pela IA
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string }
+        - name: priority
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Lista de MasterTickets com cidadãos vinculados
+
+  /admin/users:
+    get:
+      tags: [Admin]
+      summary: Listar usuários (SUPER_ADMIN only)
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: Lista de usuários
+
+  /admin/audit-logs:
+    get:
+      tags: [Admin]
+      summary: Logs de auditoria (SUPER_ADMIN only)
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - name: action
+          in: query
+          schema: { type: string }
+        - name: page
+          in: query
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Trilha de auditoria
